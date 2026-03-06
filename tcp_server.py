@@ -20,38 +20,50 @@ class TCPserver:
         print(f"Server is listening on {host}: {port}")
 
     
-    def handle_client(self,conn,addr):
+    
+    def handle_client(self, conn, addr):
         print(f"Connected by {addr}")
-        buffer=""
+        buffer = ""
+    
         try:
             while True:
-                data=conn.recv(1024).decode()
-                #decode means convert bytes to string
-                if not data:
+                # 1. Receive raw data from the socket
+                raw_data = conn.recv(1024)
+                if not raw_data:
+                    # Client closed the connection
                     break
 
-                buffer+=data
+                # 2. Decode and add to our cumulative buffer
+                buffer += raw_data.decode('utf-8')
 
-                if "r\n" in buffer or "\n" in buffer:
-                    command=buffer.strip() #strip means remove spaces and newlines from the beginning and end of the string
+                # 3. Check if we have at least one complete message (ending in \n)
+                # We use a while loop here in case multiple commands arrived in one packet
+                while "\n" in buffer:
+                    # Split the buffer: 'line' is the command, 'buffer' is whatever is left
+                    line, buffer = buffer.split("\n", 1)
+                
+                    # 4. Process the command
+                    command = line.strip().upper()
+                
+                    # Only print when we have the FULL command
+                    if command:
+                        print(f"Data received from {addr}: {command}")
 
-                    if command.upper()=="PING":
+                    if command == "PING":
                         conn.send(b"+PONG\r\n")
+                    elif command == "":
+                        # Ignore empty lines/extra newlines
+                        continue
                     else:
                         conn.send(b"-ERR Unknown command\r\n")
 
-                    buffer="" #clear the buffer for the next command
-
-                
         except Exception as e:
-            print(f"_ERR {str(e)} from {addr}\r\n".encode())
-
+            print(f"Error handling client {addr}: {e}")
+    
         finally:
             print(f"Closing connection with {addr}")
             conn.close()
 
-
-        
 
 
     def run(self):
