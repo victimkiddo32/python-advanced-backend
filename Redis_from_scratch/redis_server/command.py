@@ -1,9 +1,12 @@
+import time
+
 from .storage import DataStore
 from .response import *
 
 class CommandHandler:
     def __init__(self, storage):
         self.storage = storage
+        self.command_count=0
         self.commands = {
             "PING": self.ping,
             "ECHO": self.echo,
@@ -13,10 +16,17 @@ class CommandHandler:
             "EXISTS": self.exists,
             "KEYS": self.keys,
             "FLUSHALL": self.flushall,
-            "INFO": self.info
+            "INFO": self.info,
+            "EXPIRE": self.expire,
+            "EXPIREAT": self.expire_at,
+            "TTL": self.ttl,
+            "PTTL": self.pttl,
+            "PERSIST": self.persist,
+            "TYPE": self.get_type
         }
 
     def execute(self, command, *args): # execute("SET", "mykey", "myvalue"), args = ("mykey", "myvalue")
+        self.command_count+=1
         cmd = self.commands.get(command.upper()) # get the command function
         # print(f"Command : {command}")
         # print(f"Args : {args}")
@@ -31,9 +41,22 @@ class CommandHandler:
         return simple_string(" ".join(args)) if args else simple_string("")
 
     def set(self, *args):
+        # SET myvalue 5 EX 30
         if len(args) < 2:
             return error("wrong number of arguments for 'set' command")
-        self.storage.set(args[0], " ".join(args[1:]))
+        key=args[0]
+        value=" ".join(args[1:])
+        expiry_time=None
+        if len(args) > 4 and args[-2].upper() == "EX":
+            try:
+                seconds = int(args[-1])
+                expiry_time= time.time() + seconds
+                value=" ".join(args[1:-2])
+            
+            except ValueError:
+                return error("invalid expire time")
+
+        self.storage.set(key, value, expiry_time)
         return ok()
 
     def get(self, *args):
@@ -60,6 +83,64 @@ class CommandHandler:
     def flushall(self, *args):
         self.storage.flush()
         return ok()
+    
+    
+    def expire(self, *args):
+        # EXPIRE myvalue 30
+        if len(args)!=2:
+            return error("Wrong number of arguments for expire command")
+        
+        key = args[0]
+        try:
+            seconds = int (args[1])
+            if seconds <=0:
+                return integer(0)
+            success=self.storage.expire(key,seconds)
+            return integer(1) if success else integer(0)
+        except ValueError:
+            return error("invalid expire time")
+
+
+    def expire_at(self,*args):
+        return
+    
+    def ttl(self,*args):
+        # handle the command and pass the arguements to the storage layer
+        # TTL myvalue
+        if len(args)!=1:
+            return error("Wrong number of arguements for ttl ")
+        
+        key=args[0]
+        return integer(self.storage.ttl(key))
+
+    def pttl(self,*args):
+        # PYYL myvalue
+        if len(args)!=1:
+            return error("Wrong number of arguements for pttl ")
+        
+        key=args[0]
+        return integer(self.storage.pttl(key))
+         
+    
+    def persist(self,*args):
+        # PERSIST myvalue
+        if len(args)!=1:
+            return error("Wrong number of arguements for persist ")
+        
+        key=args[0]
+        success=self.storage.persist(key)
+        return integer(1) if success else integer(0)
+    
+    
+    def get_type(self,*args):
+        # TYPE myvalue
+        if len(args)!=1:
+            return error("Wrong number of arguements for get_type ")
+        key=args[0]
+        return simple_string(self.storage.get_type(key))
+    
+    
+
 
     def info(self, *args):
         info = {
