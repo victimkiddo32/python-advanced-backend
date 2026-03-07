@@ -1,5 +1,6 @@
 import socket
 import select
+from time import time
 from .command import CommandHandler
 from .storage import DataStore
 
@@ -12,6 +13,9 @@ class RedisServer:
         self.clients = {}
         self.storage = DataStore()
         self.command_handler = CommandHandler(self.storage)
+        self.last_cleanup_time = time.time()
+        self.cleanup_interval = 0.1 # active expiration every 100ms
+
 
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -28,7 +32,7 @@ class RedisServer:
             try:
                 read, _, _ = select.select(
                     [self.server_socket] + list(self.clients.keys()),
-                    [], [], 1.0
+                    [], [], 0.05
                 )
                 
                 # print(f"Server Socket:{self.server_socket} ")
@@ -39,7 +43,15 @@ class RedisServer:
                         self._accept_client() # create a new client connection and add it to the clients dictionary
                     else:
                         self._handle_client(sock)
-                        
+
+                #Active expiration check
+                current_time= time()
+                if current_time - self.last_cleanup_time >=self.cleanup_interval:
+                    #background cleanup of expired keys
+                    self.last_cleanup_time=current_time
+                    self.background_cleanup()
+
+
             except KeyboardInterrupt:
                 break
             except Exception as e:
@@ -69,6 +81,7 @@ class RedisServer:
 
     def _process_buffer(self, client):
         buffer = self.clients[client]["buffer"]
+        
         while b"\r\n" in buffer:
             command, buffer = buffer.split(b"\r\n", 1)
             # print(f"buffer: {buffer}")
@@ -79,12 +92,26 @@ class RedisServer:
         
         self.clients[client]["buffer"] = buffer
 
+
     def _process_command(self, command_line):
         parts = command_line.strip().split()
         # print(f"Parts: {parts}")
         if not parts:
-            return error("empty command")
+            return self.error("empty command")
         return self.command_handler.execute(parts[0], *parts[1:])
+    
+    def background_cleanup(self):
+        try:
+            expired_count=self.storage.cleanup_expired_keys()
+            if expired_count>0:
+                print(f"Cleaned up {expired_count} expired keys")
+        
+        except Exception as e:
+            print(f"Error during background cleanup : {e}")
+
+
+
+
 
     def _disconnect_client(self, client):
         client.close()
