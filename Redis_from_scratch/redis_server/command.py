@@ -1,13 +1,12 @@
 import time
-
 from .storage import DataStore
 from .response import *
 
 class CommandHandler:
     def __init__(self, storage, persistence_manager=None):
         self.storage = storage
-        self.command_count=0
         self.persistence_manager = persistence_manager
+        self.command_count = 0
         self.commands = {
             "PING": self.ping,
             "ECHO": self.echo,
@@ -19,32 +18,31 @@ class CommandHandler:
             "FLUSHALL": self.flushall,
             "INFO": self.info,
             "EXPIRE": self.expire,
-            "EXPIREAT": self.expire_at,
+            "EXPIREAT": self.expireat,
             "TTL": self.ttl,
             "PTTL": self.pttl,
             "PERSIST": self.persist,
             "TYPE": self.get_type,
-            #Persistence commands
-            "BGREWRITEAOF": self.bgrewriteaof,
+            # Persistence commands
+            "SAVE": self.save,
+            "BGSAVE": self.bgsave,
+            "LASTSAVE": self.lastsave,
             "CONFIG": self.config_command,
             "DEBUG": self.debug_command
         }
 
-    def execute(self, command, *args): # execute("SET", "mykey", "myvalue"), args = ("mykey", "myvalue")
-        self.command_count+=1
-        cmd = self.commands.get(command.upper()) # get the command function
-        # print(f"Command : {command}")
-        # print(f"Args : {args}")
+    def execute(self, command, *args):
+        self.command_count += 1
+        cmd = self.commands.get(command.upper())
         if cmd:
-            result= cmd(*args)
-        
+            result = cmd(*args)
+            
             # Log write commands to AOF
             if self.persistence_manager:
                 self.persistence_manager.log_write_command(command, *args)
-
+            
             return result
-
-        return error(f"unknown command '{command}'")
+        return error(f"Unknown command '{command}'")
 
     def ping(self, *args):
         return pong()
@@ -53,30 +51,29 @@ class CommandHandler:
         return simple_string(" ".join(args)) if args else simple_string("")
 
     def set(self, *args):
-        # SET myvalue 5 EX 30
         if len(args) < 2:
             return error("wrong number of arguments for 'set' command")
-        key=args[0]
-        value=" ".join(args[1:])
-
+        
+        key = args[0]
+        value = " ".join(args[1:])
+        
         # Parse optional EX parameter for expiration
-        expiry_time=None
-        if len(args) > 4 and args[-2].upper() == "EX":
+        expiry_time = None
+        if len(args) >= 4 and args[-2].upper() == "EX":
             try:
                 seconds = int(args[-1])
-                expiry_time= time.time() + seconds
-                value=" ".join(args[1:-2])
-            
+                expiry_time = time.time() + seconds
+                value = " ".join(args[1:-2])
             except ValueError:
-                return error("invalid expire time")
-
+                return error("Invalid expire time in set")
+        
         self.storage.set(key, value, expiry_time)
         return ok()
 
     def get(self, *args):
         if len(args) != 1:
             return error("wrong number of arguments for 'get' command")
-        return bulk_string(self.storage.get(args[0]))
+        return bulk_string(self.storage.get(args[0])) # def get(self, key) -> value -> [len(value) {value}]
 
     def delete(self, *args):
         if not args:
@@ -89,7 +86,8 @@ class CommandHandler:
         return integer(self.storage.exists(*args))
 
     def keys(self, *args):
-        keys = self.storage.keys()
+        pattern = args[0] if args else "*"
+        keys = self.storage.keys(pattern)
         if not keys:
             return array([])
         return array([bulk_string(key) for key in keys])
@@ -97,43 +95,39 @@ class CommandHandler:
     def flushall(self, *args):
         self.storage.flush()
         return ok()
-    
-    
+
     def expire(self, *args):
-        # EXPIRE myvalue 30
-        if len(args)!=2:
-            return error("Wrong number of arguments for expire command")
+        if len(args) != 2:
+            return error("Wrong number of arguments for 'expire' command")
         
         key = args[0]
         try:
-            seconds = int (args[1])
-            if seconds <=0:
+            seconds = int(args[1])
+            if seconds <= 0:
                 return integer(0)
-            success=self.storage.expire(key,seconds)
-            return integer(1) if success else integer(0)
+            success = self.storage.expire(key, seconds)
+            return integer(1 if success else 0)
         except ValueError:
             return error("invalid expire time")
 
-
-    def expire_at(self,*args):
+    def expireat(self, *args):
         if len(args) != 2:
-            return error("Wrong number of arguments for expireat command")
+            return error("wrong number of arguments for 'expireat' command")
         
         key = args[0]
         try:
-            # Timestamps are usually large integers or floats
-            timestamp = float(args[1])
+            timestamp = int(args[1])
+            if timestamp <= time.time():
+                return integer(0)
             success = self.storage.expire_at(key, timestamp)
-        
-            # Redis returns 1 if expiry was set, 0 if key doesn't exist
-            return integer(1) if success else integer(0)
+            return integer(1 if success else 0)
         except ValueError:
-            return error("invalid expireat timestamp")
-    
-    
-    def ttl(self,*args):
-        # handle the command and pass the arguements to the storage layer
-        # TTL myvalue
+            return error("invalid timestamp")
+
+    def ttl(self, *args):
+        if len(args) != 1:
+            return error("wrong number of arguments for 'ttl' command")
+        
         ttl_value = self.storage.ttl(args[0])
 
         if ttl_value == -1:
@@ -142,13 +136,10 @@ class CommandHandler:
             return simple_string(f"Key has expired: {args[0]}")
         # Return TTL as an integer
         return integer(ttl_value)
-    
-        return integer(self.storage.ttl(key))
 
-    def pttl(self,*args):
-        # PYYL myvalue
-        if len(args)!=1:
-            return error("Wrong number of arguements for pttl ")
+    def pttl(self, *args):
+        if len(args) != 1:
+            return error("wrong number of arguments for 'pttl' command")
         
         pttl_value = self.storage.pttl(args[0])
         if pttl_value == "-1":
@@ -157,65 +148,63 @@ class CommandHandler:
             return simple_string(f"Key has expired: {args[0]}")
         # Return PTTL as an integer
         return integer(pttl_value)
-    
-         
-    
-    def persist(self,*args):
-        # PERSIST myvalue
-        if len(args)!=1:
-            return error("Wrong number of arguements for persist ")
+
+    def persist(self, *args):
+        if len(args) != 1:
+            return error("wrong number of arguments for 'persist' command")
         
-        key=args[0]
-        success=self.storage.persist(key)
-        return integer(1) if success else integer(0)
-    
-    
-    def get_type(self,*args):
-        # TYPE myvalue
-        if len(args)!=1:
-            return error("Wrong number of arguements for get_type ")
+        success = self.storage.persist(args[0])
+        return integer(1 if success else 0)
+
+    def get_type(self, *args):
+        if len(args) != 1:
+            return error("wrong number of arguments for 'type' command")
+        
         data_type = self.storage.get_type(args[0])
         return simple_string(data_type)
 
-    
-
-
-
     def info(self, *args):
+        memory_usage = self.storage.get_memory_usage()
+        key_count = len(self.storage.keys())
+        
         info = {
             "server": {
                 "redis_version": "7.0.0-custom",
-                "redis_mode": "standalone"
+                "redis_mode": "standalone",
+                "uptime_in_seconds": int(time.time())
             },
             "stats": {
-                "total_commands_processed": self.command_count  
+                "total_commands_processed": self.command_count,
+                "keyspace_hits": 0,  # Could be implemented with counters
+                "keyspace_misses": 0
+            },
+            "memory": {
+                "used_memory": memory_usage,
+                "used_memory_human": self._format_bytes(memory_usage)
             },
             "keyspace": {
-                "db0": f"keys={len(self.storage.keys())},expires=0"
+                "db0": f"keys={key_count},expires=0,avg_ttl=0"
             }
         }
-
-        # Add persistence info if available
+        
+        # Add persistence information if available
         if self.persistence_manager:
             persistence_stats = self.persistence_manager.get_stats()
             info["persistence"] = {
-                "aof_enabled": int(persistence_stats.get('aof_enabled', False)),
-                "aof_last_sync_time": int(persistence_stats.get('last_aof_sync_time', 0)),
-                "aof_filename": persistence_stats.get('aof_filename', '')
+                "rdb_enabled": int(persistence_stats.get('rdb_enabled', False)),
+                "rdb_changes_since_last_save": persistence_stats.get('changes_since_save', 0),
+                "rdb_last_save_time": persistence_stats.get('last_rdb_save_time', 0),
+                "rdb_filename": persistence_stats.get('rdb_filename', '')
             }
-
+        
         sections = []
         for section, data in info.items():
-            sections.append(f"#{section}")
-            # Corrected the formatting to match standard Redis output (indentation)
-            for k, v in data.items():
-                sections.append(f"{k}:{v}")
+            sections.append(f"# {section}")
+            sections.extend(f"{k}:{v}" for k, v in data.items())
             sections.append("")  # Empty line between sections
         
-        return bulk_string("\n".join(sections))
-    
+        return bulk_string("\r\n".join(sections))
 
-    
     def _format_bytes(self, bytes_count):
         """Format bytes in human readable format"""
         for unit in ['B', 'K', 'M', 'G']:
@@ -225,21 +214,45 @@ class CommandHandler:
         return f"{bytes_count:.1f}T"
     
     # Persistence Commands
-    def bgrewriteaof(self, *args):
-        """Background AOF rewrite"""
+    def save(self, *args):
+        """Synchronous RDB save"""
         if not self.persistence_manager:
             return error("persistence not enabled")
         
         try:
-            success = self.persistence_manager.rewrite_aof_background(self.storage)
+            success = self.persistence_manager.create_rdb_snapshot(self.storage)
             if success:
-                return simple_string("Background AOF rewrite started")
+                return ok()
             else:
-                return error("background AOF rewrite failed to start")
+                return error("save failed")
         except Exception as e:
-            return error(f"bgrewriteaof error: {e}")
+            return error(f"save error: {e}")
+    
+    def bgsave(self, *args):
+        """Background RDB save"""
+        if not self.persistence_manager:
+            return error("persistence not enabled")
         
-
+        try:
+            success = self.persistence_manager.create_rdb_snapshot_background(self.storage)
+            if success:
+                return simple_string("Background saving started")
+            else:
+                return error("background save failed to start")
+        except Exception as e:
+            return error(f"bgsave error: {e}")
+    
+    def lastsave(self, *args):
+        """Get timestamp of last successful save"""
+        if not self.persistence_manager:
+            return integer(0)
+        
+        try:
+            timestamp = self.persistence_manager.get_last_save_time()
+            return integer(timestamp)
+        except Exception as e:
+            return error(f"lastsave error: {e}")
+    
     def config_command(self, *args):
         """CONFIG command for persistence settings"""
         if not args:
@@ -269,8 +282,11 @@ class CommandHandler:
             if self.persistence_manager:
                 try:
                     # Convert string values to appropriate types
-                    if parameter in ['aof_enabled', 'persistence_enabled']:
+                    if parameter in ['aof_enabled', 'rdb_enabled', 'persistence_enabled']:
                         value = value.lower() in ('true', '1', 'yes', 'on')
+                    elif parameter in ['rdb_save_conditions']:
+                        # This would need more complex parsing
+                        return error("rdb_save_conditions cannot be set via CONFIG SET")
                     
                     self.persistence_manager.config.set(parameter, value)
                     return ok()
@@ -305,4 +321,3 @@ class CommandHandler:
         
         else:
             return error(f"unknown DEBUG subcommand '{subcommand}'")
-        
