@@ -7,9 +7,9 @@ class DataStore:
         self.memory_usage=0
 
     def set(self, key, value,expiry_time=None):
-        if key in self.data:
+        if key in self._data:
             #key:(value,data_type, expiry_time)
-            old_value,_,_=self.data[key]
+            old_value,_,_=self._data[key]
             self.memory_usage -= self._calculate_memory_usage(key,old_value)
 
         data_type=self._get_data_type(value)
@@ -52,14 +52,23 @@ class DataStore:
         if not self._is_key_valid(key):
             return False
         
-        value,data_type=self.data(key)
+        value,data_type,_=self._data[key]
         expiry_time= time.time() + seconds
         self._data[key]=(value,data_type,expiry_time)
-        return
+        return True
 
 
-    def expire_at(self,key,timestamp):
-        return
+    def expire_at(self, key, timestamp):
+        """Set expiration to a specific Unix timestamp"""
+        if not self._is_key_valid(key):
+            return False
+    
+        # Unpack all 3 items to match your dictionary structure
+        value, data_type, _ = self._data[key]
+    
+        # Set the expiry directly to the provided timestamp
+        self._data[key] = (value, data_type,timestamp)
+        return True
     
     def ttl(self,key):
         # Lazy expiration
@@ -128,10 +137,15 @@ class DataStore:
 
             
 
-    def _calculate_memory_usage(self,key,value):
-        key_size= len(str(key)).encode('utf-8')
-        value_size= len(value).encode('utf-8')
-        return key_size + value_size + 64 #overhead for metadata
+    def _calculate_memory_usage(self, key, value):
+    # Convert to string, then encode to bytes, then get the length
+        key_bytes = str(key).encode('utf-8')
+        value_bytes = str(value).encode('utf-8')
+    
+        key_size = len(key_bytes)
+        value_size = len(value_bytes)
+    
+        return key_size + value_size + 64 # Overhead for metadata
     
 
     def _get_data_type(self,value):
@@ -182,6 +196,8 @@ class DataStore:
         
 
         for key in sample_keys:
+            if key not in self._data:
+                continue
             value,_,expiry_time=self._data[key]
             if expiry_time is not None and expiry_time <= current_time:
                 expired_keys.append(key)
@@ -192,5 +208,4 @@ class DataStore:
             del self._data[key]
 
         return len(expired_keys)
-    
     

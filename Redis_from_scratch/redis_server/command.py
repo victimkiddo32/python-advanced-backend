@@ -22,7 +22,11 @@ class CommandHandler:
             "TTL": self.ttl,
             "PTTL": self.pttl,
             "PERSIST": self.persist,
-            "TYPE": self.get_type
+            "TYPE": self.get_type,
+            #Persistence commands
+            "BGREWRITEAOF": self.bgrewriteaof,
+            "CONFIG": self.config_command,
+            "DEBUG": self.debug_command
         }
 
     def execute(self, command, *args): # execute("SET", "mykey", "myvalue"), args = ("mykey", "myvalue")
@@ -32,6 +36,14 @@ class CommandHandler:
         # print(f"Args : {args}")
         if cmd:
             return cmd(*args)
+        
+            # Log write commands to AOF
+            if self.persistence_manager:
+                self.persistence_manager.log_write_command(command, *args)
+
+            return result
+            return cmd(*args)
+
         return error(f"unknown command '{command}'")
 
     def ping(self, *args):
@@ -46,6 +58,8 @@ class CommandHandler:
             return error("wrong number of arguments for 'set' command")
         key=args[0]
         value=" ".join(args[1:])
+
+        # Parse optional EX parameter for expiration
         expiry_time=None
         if len(args) > 4 and args[-2].upper() == "EX":
             try:
@@ -102,15 +116,33 @@ class CommandHandler:
 
 
     def expire_at(self,*args):
-        return
+        if len(args) != 2:
+            return error("Wrong number of arguments for expireat command")
+        
+        key = args[0]
+        try:
+            # Timestamps are usually large integers or floats
+            timestamp = float(args[1])
+            success = self.storage.expire_at(key, timestamp)
+        
+            # Redis returns 1 if expiry was set, 0 if key doesn't exist
+            return integer(1) if success else integer(0)
+        except ValueError:
+            return error("invalid expireat timestamp")
+    
     
     def ttl(self,*args):
         # handle the command and pass the arguements to the storage layer
         # TTL myvalue
-        if len(args)!=1:
-            return error("Wrong number of arguements for ttl ")
-        
-        key=args[0]
+        ttl_value = self.storage.ttl(args[0])
+
+        if ttl_value == -1:
+            return simple_string(f"No expiration set for key: {args[0]}")
+        elif ttl_value == -2:
+            return simple_string(f"Key has expired: {args[0]}")
+        # Return TTL as an integer
+        return integer(ttl_value)
+    
         return integer(self.storage.ttl(key))
 
     def pttl(self,*args):
@@ -139,7 +171,7 @@ class CommandHandler:
         key=args[0]
         return simple_string(self.storage.get_type(key))
     
-    
+
 
 
     def info(self, *args):
