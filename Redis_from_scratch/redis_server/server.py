@@ -17,8 +17,8 @@ class RedisServer:
         self.storage = DataStore()
         
         #Initialize persistence
-        self.persistence_config= self.persistence_config or PersistenceConfig()
-        self.persitence_manager= PersistenceManager(self.persistence_config)
+        self.persistence_config = PersistenceConfig() # Create a fresh config
+        self.persistence_manager = PersistenceManager(self.persistence_config) 
         
          # Command handler needs reference to persistence manager for logging
         self.command_handler = CommandHandler(self.storage, self.persistence_manager)
@@ -31,11 +31,11 @@ class RedisServer:
     def start(self):
         
         #Start persistance
-        self.persitence_manager.start()
+        self.persistence_manager.start()
 
         # Recover data from persistence files
         print("Recovering data from persistence files...")
-        recovery_success= self.persitence_manager.recover_data(self.storage,self.command_handler)
+        recovery_success= self.persistence_manager.recover_data(self.storage,self.command_handler)
         if recovery_success:
             print("Data recovery completed successfully")
         else:
@@ -86,7 +86,7 @@ class RedisServer:
                     self._background_persistence_tasks()
                     self.last_persistence_time = current_time
 
-       
+        
 
             except KeyboardInterrupt:
                 break
@@ -182,7 +182,7 @@ class RedisServer:
 
         #Stop persistence
         try:
-            self.persitence_manager.stop()
+            self.persistence_manager.stop()
         except Exception as e:
             print(f"Error stopping persistence: {e}")
 

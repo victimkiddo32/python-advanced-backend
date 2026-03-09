@@ -4,9 +4,10 @@ from .storage import DataStore
 from .response import *
 
 class CommandHandler:
-    def __init__(self, storage):
+    def __init__(self, storage, persistence_manager=None):
         self.storage = storage
         self.command_count=0
+        self.persistence_manager = persistence_manager
         self.commands = {
             "PING": self.ping,
             "ECHO": self.echo,
@@ -35,14 +36,13 @@ class CommandHandler:
         # print(f"Command : {command}")
         # print(f"Args : {args}")
         if cmd:
-            return cmd(*args)
+            result= cmd(*args)
         
             # Log write commands to AOF
             if self.persistence_manager:
                 self.persistence_manager.log_write_command(command, *args)
 
             return result
-            return cmd(*args)
 
         return error(f"unknown command '{command}'")
 
@@ -150,8 +150,14 @@ class CommandHandler:
         if len(args)!=1:
             return error("Wrong number of arguements for pttl ")
         
-        key=args[0]
-        return integer(self.storage.pttl(key))
+        pttl_value = self.storage.pttl(args[0])
+        if pttl_value == "-1":
+            return simple_string(f"No expiration set for key: {args[0]}")
+        elif pttl_value == "-2":
+            return simple_string(f"Key has expired: {args[0]}")
+        # Return PTTL as an integer
+        return integer(pttl_value)
+    
          
     
     def persist(self,*args):
@@ -168,8 +174,9 @@ class CommandHandler:
         # TYPE myvalue
         if len(args)!=1:
             return error("Wrong number of arguements for get_type ")
-        key=args[0]
-        return simple_string(self.storage.get_type(key))
+        data_type = self.storage.get_type(args[0])
+        return simple_string(data_type)
+
     
 
 
@@ -181,14 +188,121 @@ class CommandHandler:
                 "redis_mode": "standalone"
             },
             "stats": {
-                "total_commands_processed": 0  # Would track this in server
+                "total_commands_processed": self.command_count  
             },
             "keyspace": {
                 "db0": f"keys={len(self.storage.keys())},expires=0"
             }
         }
+
+        # Add persistence info if available
+        if self.persistence_manager:
+            persistence_stats = self.persistence_manager.get_stats()
+            info["persistence"] = {
+                "aof_enabled": int(persistence_stats.get('aof_enabled', False)),
+                "aof_last_sync_time": int(persistence_stats.get('last_aof_sync_time', 0)),
+                "aof_filename": persistence_stats.get('aof_filename', '')
+            }
+
         sections = []
         for section, data in info.items():
             sections.append(f"#{section}")
-            sections.extend(f"{k}:{v}" for k, v in data.items())
+            # Corrected the formatting to match standard Redis output (indentation)
+            for k, v in data.items():
+                sections.append(f"{k}:{v}")
+            sections.append("")  # Empty line between sections
+        
         return bulk_string("\n".join(sections))
+    
+
+    
+    def _format_bytes(self, bytes_count):
+        """Format bytes in human readable format"""
+        for unit in ['B', 'K', 'M', 'G']:
+            if bytes_count < 1024:
+                return f"{bytes_count:.1f}{unit}"
+            bytes_count /= 1024
+        return f"{bytes_count:.1f}T"
+    
+    # Persistence Commands
+    def bgrewriteaof(self, *args):
+        """Background AOF rewrite"""
+        if not self.persistence_manager:
+            return error("persistence not enabled")
+        
+        try:
+            success = self.persistence_manager.rewrite_aof_background(self.storage)
+            if success:
+                return simple_string("Background AOF rewrite started")
+            else:
+                return error("background AOF rewrite failed to start")
+        except Exception as e:
+            return error(f"bgrewriteaof error: {e}")
+        
+
+    def config_command(self, *args):
+        """CONFIG command for persistence settings"""
+        if not args:
+            return error("wrong number of arguments for 'config' command")
+        
+        subcommand = args[0].upper()
+        
+        if subcommand == "GET":
+            if len(args) != 2:
+                return error("wrong number of arguments for 'config get' command")
+            
+            parameter = args[1].lower()
+            if self.persistence_manager:
+                config_value = self.persistence_manager.config.get(parameter)
+                if config_value is not None:
+                    return array([bulk_string(parameter), bulk_string(str(config_value))])
+            
+            return array([])
+        
+        elif subcommand == "SET":
+            if len(args) != 3:
+                return error("wrong number of arguments for 'config set' command")
+            
+            parameter = args[1].lower()
+            value = args[2]
+            
+            if self.persistence_manager:
+                try:
+                    # Convert string values to appropriate types
+                    if parameter in ['aof_enabled', 'persistence_enabled']:
+                        value = value.lower() in ('true', '1', 'yes', 'on')
+                    
+                    self.persistence_manager.config.set(parameter, value)
+                    return ok()
+                except Exception as e:
+                    return error(f"config set error: {e}")
+            
+            return error("persistence not enabled")
+        
+        else:
+            return error(f"unknown CONFIG subcommand '{subcommand}'")
+    
+    def debug_command(self, *args):
+        """DEBUG command for development/testing"""
+        if not args:
+            return error("wrong number of arguments for 'debug' command")
+        
+        subcommand = args[0].upper()
+        
+        if subcommand == "RELOAD":
+            if self.persistence_manager:
+                try:
+                    # Reload data from persistence files
+                    success = self.persistence_manager.recover_data(self.storage, self)
+                    if success:
+                        return ok()
+                    else:
+                        return error("reload failed")
+                except Exception as e:
+                    return error(f"reload error: {e}")
+            else:
+                return error("persistence not enabled")
+        
+        else:
+            return error(f"unknown DEBUG subcommand '{subcommand}'")
+        
